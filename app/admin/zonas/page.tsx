@@ -8,20 +8,26 @@ import { supabase } from '@/lib/supabase';
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN;
 
 // 1. Creador de Geometría Visual (Individual)
+// Mapbox no dibuja círculos perfectos usando radios nativamente.
+// Esta función convierte un punto (centro) y un radio en un polígono de 64 lados
+// que simula ser un círculo, para mostrar el área de cobertura mientras se crea/edita.
 const crearCirculoGeoJSON = (centro: {lat: number, lng: number}, radioMetros: number) => {
   if (!centro) return null;
-  const km = radioMetros / 1000;
+  const km = radioMetros / 1000; // Pasamos a kilómetros
+  
+  // Fórmulas para calcular la deformación del mapa según la latitud (la Tierra no es plana)
   const distanceX = km / (111.320 * Math.cos(centro.lat * Math.PI / 180));
   const distanceY = km / 110.574;
   
   const puntos = [];
+  // Dibujamos los 64 puntos del perímetro
   for (let i = 0; i < 64; i++) {
     const theta = (i / 64) * (2 * Math.PI);
     const x = distanceX * Math.cos(theta);
     const y = distanceY * Math.sin(theta);
     puntos.push([centro.lng + x, centro.lat + y]);
   }
-  puntos.push(puntos[0]);
+  puntos.push(puntos[0]); // Cerramos la figura conectando el último punto al primero
 
   return {
     type: 'FeatureCollection',
@@ -33,15 +39,20 @@ const crearCirculoGeoJSON = (centro: {lat: number, lng: number}, radioMetros: nu
 };
 
 // 2. FÓRMULA DE HAVERSINE
+// Calcula la distancia exacta en línea recta (en metros) entre dos coordenadas GPS.
+// Se usa para evitar que al crear una nueva zona, su radio se solape/choque con el de otra zona existente.
 const calcularDistancia = (lat1: number, lon1: number, lat2: number, lon2: number) => {
-  const R = 6371e3;
-  const rad = Math.PI / 180;
+  const R = 6371e3; // Radio de la Tierra en metros
+  const rad = Math.PI / 180; // Factor de conversión a radianes
   const dLat = (lat2 - lat1) * rad;
   const dLon = (lon2 - lon1) * rad;
+  
+  // Matemática esférica para medir distancias curvas
   const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
             Math.cos(lat1 * rad) * Math.cos(lat2 * rad) *
             Math.sin(dLon/2) * Math.sin(dLon/2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  
   return R * c; 
 };
 
@@ -135,26 +146,38 @@ export default function AdminZonasPage() {
     }
   };
 
+  // --- GUARDAR O ACTUALIZAR ZONA (GEOCERCA) ---
   const handleGuardar = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!puntoSeleccionado) return setErrorForm("Primero debes hacer clic en el mapa.");
+    
+    // 1. Validaciones básicas
+    if (!puntoSeleccionado) return setErrorForm("Primero debes hacer clic en el mapa para fijar el centro.");
     if (!nombre.trim()) return setErrorForm("El nombre es obligatorio.");
 
+    // 2. Validación de Nombre Único: Asegurarnos de que no haya otra zona que se llame igual
     const nombreExiste = zonas.some(
       z => z.nombre.toLowerCase().trim() === nombre.toLowerCase().trim() && z.id !== editandoId
     );
     if (nombreExiste) return setErrorForm(`Ya existe una zona llamada "${nombre}".`);
 
+    // 3. Validación Anti-Colisión: Comprobamos si nos estamos solapando con otra zona
     const zonaInvadida = zonas.find(z => {
+      // Si estamos editando, ignoramos comprobarnos contra nosotros mismos
       if (z.id === editandoId) return false;
+      
+      // Calculamos a qué distancia estamos del centro de la otra zona
       const distanciaMetros = calcularDistancia(puntoSeleccionado.lat, puntoSeleccionado.lng, z.centro_lat, z.centro_lng);
+      
+      // Si la distancia entre los dos centros es MENOR que la suma de sus radios, significa que las áreas se están chocando
       return distanciaMetros < (radio + z.radio_metros);
     });
 
+    // Si hubo choque/colisión, detenemos el guardado
     if (zonaInvadida) {
       return setErrorForm(`¡Colisión! Invades la zona "${zonaInvadida.nombre}".`);
     }
 
+    // 4. Preparamos la información limpia para mandarla a la base de datos
     const payload = {
       nombre: nombre.trim(),
       centro_lat: puntoSeleccionado.lat,
@@ -162,12 +185,14 @@ export default function AdminZonasPage() {
       radio_metros: radio
     };
 
+    // 5. Actualizamos o Creamos según corresponda
     if (editandoId) {
       await supabase.from('zonas').update(payload).eq('id', editandoId);
     } else {
       await supabase.from('zonas').insert([payload]);
     }
 
+    // Borramos el formulario y recargamos la lista actualizada
     limpiarFormulario();
     cargarZonas();
   };

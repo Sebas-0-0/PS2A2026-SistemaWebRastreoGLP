@@ -27,6 +27,14 @@ export default function AdminCamionesPage() {
     cargarDatos();
   }, []);
 
+  // --- EFECTO AUTOMÁTICO PARA EL ESTADO ---
+  // Si se queda sin conductor, forzamos visualmente el estado a "Fuera de Servicio"
+  useEffect(() => {
+    if (conductorId === '') {
+      setEstado('Fuera de Servicio');
+    }
+  }, [conductorId]);
+
   const cargarDatos = async () => {
     setLoading(true);
     
@@ -64,7 +72,7 @@ export default function AdminCamionesPage() {
     setModelo('');
     setAño('');
     setConductorId('');
-    setEstado('Activo');
+    setEstado('Fuera de Servicio'); // Inicia por defecto sin conductor, así que es Fuera de Servicio
     setErrorForm(null);
     setMostrarModal(true);
   };
@@ -104,9 +112,7 @@ export default function AdminCamionesPage() {
       return;
     }
 
-    // --- NUEVA VALIDACIÓN: EVITAR DUPLICIDAD ---
-    // Buscamos si ya existe la placa en la lista de camiones. 
-    // Ignoramos el ID actual si estamos editando.
+    // 2. Validación de duplicidad
     const placaDuplicada = camiones.some(
       (c) => c.placa === placa && c.id !== editandoId
     );
@@ -117,13 +123,17 @@ export default function AdminCamionesPage() {
       return;
     }
 
+    // --- 3. VALIDACIÓN DE ESTADO---
+    // Aseguramos nivel base de datos que si conductor_id es null, estado sea "Fuera de Servicio"
+    const estadoFinal = conductorId ? estado : 'Fuera de Servicio';
+
     const payload = {
       placa: placa,
       marca: marca.trim(),
       modelo: modelo.trim(),
       año: año ? parseInt(año) : null,
       conductor_id: conductorId || null,
-      estado
+      estado: estadoFinal
     };
 
     let error;
@@ -298,13 +308,24 @@ export default function AdminCamionesPage() {
                 </select>
               </div>
 
+              {/* SELECTOR DE ESTADO CON BLOQUEO INTELIGENTE */}
               <div>
                 <label className="block text-xs text-black font-black uppercase mb-1">Estado</label>
-                <select value={estado} onChange={(e) => setEstado(e.target.value)} className="w-full p-3 border-2 border-black rounded-xl font-bold outline-none bg-white text-gray-700 focus:bg-blue-50 cursor-pointer">
+                <select 
+                  value={!conductorId ? 'Fuera de Servicio' : estado} 
+                  onChange={(e) => setEstado(e.target.value)} 
+                  disabled={!conductorId}
+                  className="w-full p-3 border-2 border-black rounded-xl font-bold outline-none bg-white text-gray-700 focus:bg-blue-50 cursor-pointer disabled:bg-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed transition-colors"
+                >
                   <option value="Activo">Activo (En servicio)</option>
                   <option value="Mantenimiento">Mantenimiento</option>
                   <option value="Fuera de Servicio">Fuera de Servicio</option>
                 </select>
+                {!conductorId && (
+                  <p className="text-[10px] text-red-500 font-black mt-1 leading-tight uppercase">
+                    Este Camion esta fuera de servicio mientras no tenga asignado un conductor.
+                  </p>
+                )}
               </div>
 
               <button type="submit" disabled={procesando} className="w-full bg-yellow-400 border-2 border-black py-4 font-black rounded-xl shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:translate-y-1 active:shadow-none transition-all mt-4 disabled:bg-gray-300 text-black">

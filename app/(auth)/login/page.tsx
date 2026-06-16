@@ -8,21 +8,27 @@ import { supabase } from '@/lib/supabase';
 export default function LoginPage() {
   const router = useRouter();
   
-  // Vista actual: 'login' o 'recuperar'
+  // --- ESTADOS DEL COMPONENTE ---
+  // Define si mostramos el formulario de "login" o el de "recuperar contraseña"
   const [vista, setVista] = useState<'login' | 'recuperar'>('login');
 
+  // Campos del formulario
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  
+  // Estados para manejar la carga (botones deshabilitados) y mensajes de éxito/error
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [mensaje, setMensaje] = useState<string | null>(null); // Para el mensaje de éxito al recuperar
+  const [mensaje, setMensaje] = useState<string | null>(null); // Mensaje de éxito al recuperar contraseña
 
-  // --- FUNCIÓN DE LOGIN ---
+  // --- FUNCIÓN PRINCIPAL DE LOGIN ---
+  // Esta función se ejecuta cuando el usuario envía el formulario de inicio de sesión
   const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    setError(null);
+    e.preventDefault(); // Evita que la página se recargue al enviar el formulario
+    setLoading(true);   // Activa el estado de carga (muestra "Ingresando...")
+    setError(null);     // Limpia cualquier error anterior
 
+    // Intenta iniciar sesión usando Supabase con el correo y la contraseña
     const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
       email,
       password,
@@ -31,28 +37,30 @@ export default function LoginPage() {
     console.log('Auth data:', authData) 
     console.log('Auth error:', authError)
 
+    // Si ocurre un error (ej. contraseña incorrecta), lo mostramos y detenemos el proceso
     if (authError) {
       setError("Correo o contraseña incorrectos. Verifica tus datos.");
       setLoading(false);
       return; 
     }
 
+    // Si la autenticación fue exitosa, procedemos a buscar el rol del usuario
     if (authData?.user) {
+      // Consultamos la tabla 'profiles' para obtener el rol del usuario autenticado
       const { data: profileData, error: profileError } = await supabase
         .from('profiles')
         .select('rol')
         .eq('id', authData.user.id)
-        .single(); 
+        .single(); // Usamos single() porque esperamos un único perfil
 
-      console.log('Profile data:', profileData) 
-      console.log('Profile error:', profileError)
-
+      // Si hay un error al buscar el perfil, mostramos un mensaje y detenemos el proceso
       if (profileError || !profileData) {
         setError("Error al obtener el perfil del usuario.");
         setLoading(false);
         return;
       }
 
+      // Guardamos el rol del usuario para redirigirlo a la pantalla correcta
       const rol = profileData.rol;
 
       if (rol === 'admin') {
@@ -69,11 +77,12 @@ export default function LoginPage() {
   };
 
   // --- FUNCIÓN PARA RECUPERAR CONTRASEÑA ---
+  // Esta función se ejecuta cuando el usuario solicita restablecer su contraseña
   const handleRecuperar = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    setError(null);
-    setMensaje(null);
+    e.preventDefault(); // Evita que la página se recargue
+    setLoading(true);   // Activa el estado de carga
+    setError(null);     // Limpia errores anteriores
+    setMensaje(null);   // Limpia mensajes anteriores
 
     // Supabase enviará un correo con un enlace que redirigirá al usuario para cambiar su contraseña
     const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, {

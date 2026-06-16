@@ -7,18 +7,27 @@ import { supabase } from '@/lib/supabase';
 
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN;
 
+// --- FUNCIÓN PARA DIBUJAR CÍRCULOS EN EL MAPA ---
+// Mapbox no tiene una forma nativa de dibujar círculos perfectos usando solo un radio en metros.
+// Esta función toma el centro (lat/lng) y el radio, y calcula 64 puntos alrededor para formar
+// un polígono (un círculo falso) que Mapbox sí puede dibujar y entender como una "zona".
 const crearCirculoGeoJSON = (zonas: any[]) => {
   if (!zonas || zonas.length === 0) return null;
   
   const features = zonas.map(z => {
+    // Convertimos el radio de metros a kilómetros
     const km = z.radio_metros / 1000;
+    // Cálculos matemáticos para ajustar la distancia según la curvatura de la tierra
     const distanceX = km / (111.320 * Math.cos(z.centro_lat * Math.PI / 180));
     const distanceY = km / 110.574;
+    
     const puntos = [];
+    // Dibujamos 64 puntos alrededor del centro para ir formando el círculo
     for (let i = 0; i < 64; i++) {
       const theta = (i / 64) * (2 * Math.PI);
       puntos.push([z.centro_lng + distanceX * Math.cos(theta), z.centro_lat + distanceY * Math.sin(theta)]);
     }
+    // Cerramos el círculo conectando el último punto con el primero
     puntos.push(puntos[0]);
     
     return {
@@ -38,8 +47,6 @@ export default function MapaEnVivoPage() {
   const [camionSeleccionado, setCamionSeleccionado] = useState<any | null>(null);
   
   const [filtroZona, setFiltroZona] = useState('');
-  
-  // NUEVO ESTADO: Controla el switch de los nombres en el mapa
   const [mostrarEtiquetas, setMostrarEtiquetas] = useState(true);
 
   const mapRef = useRef<any>(null);
@@ -54,48 +61,76 @@ export default function MapaEnVivoPage() {
 
   const zonasGeoJSON: any = useMemo(() => crearCirculoGeoJSON(zonas), [zonas]);
 
+  // --- EFECTO DE INICIALIZACIÓN Y RASTREO EN VIVO ---
+  // Se ejecuta una sola vez al abrir la página del mapa
   useEffect(() => {
+    // 1. Carga las zonas y camiones iniciales
     cargarDatosIniciales();
 
+    // 2. Nos suscribimos a los cambios en tiempo real de la tabla 'camiones' usando Supabase Realtime
     const suscripcionCamiones = supabase
       .channel('rastreo-en-vivo')
       .on(
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'camiones' },
         (payload) => {
-          setCamiones((camionesActuales) => 
-            camionesActuales.map((camion) => 
-              camion.id === payload.new.id 
-                ? { ...camion, lat: payload.new.lat, lng: payload.new.lng }
-                : camion
-            )
-          );
+          setCamiones((camionesActuales) => {
+            // AQUÍ ESTÁ LA CLAVE:
+            // Si el campo 'activo' cambió a false (terminó su turno) o
+            // si el campo 'estado' ya no es 'Activo', el camión debe desaparecer de la vista.
+            if (payload.new.activo === false || payload.new.estado !== 'Activo') {
+              return camionesActuales.filter(c => c.id !== payload.new.id);
+            }
+
+            // De lo contrario, buscamos si el camión ya estaba mostrado en el mapa
+            const camionExistente = camionesActuales.find(c => c.id === payload.new.id);
+            
+            if (camionExistente) {
+              // Si ya existía, simplemente actualizamos sus coordenadas (lat y lng) para que se "mueva"
+              return camionesActuales.map((camion) => 
+                camion.id === payload.new.id 
+                  ? { ...camion, lat: payload.new.lat, lng: payload.new.lng, activo: true, estado: payload.new.estado }
+                  : camion
+              );
+            } else {
+              // Si el camión se acaba de activar (inició turno) y no lo teníamos, volvemos a descargar la lista
+              cargarDatosIniciales();
+              return camionesActuales;
+            }
+          });
         }
       )
       .subscribe();
 
+    // 3. Solucionamos un problema visual: si la ventana del navegador cambia de tamaño, el mapa se adapta
     if (!mapContainerRef.current) return;
     const observer = new ResizeObserver(() => {
       if (mapRef.current) mapRef.current.resize();
     });
     observer.observe(mapContainerRef.current);
 
+    // Al desmontar (irse a otra página), apagamos el vigilante y la suscripción en tiempo real
     return () => {
       observer.disconnect();
       supabase.removeChannel(suscripcionCamiones);
     };
   }, []);
 
+  // --- CARGA INICIAL DE DATOS ---
   const cargarDatosIniciales = async () => {
     setLoading(true);
     
+    // Obtenemos todas las zonas registradas (para dibujar los círculos/geocercas)
     const { data: dataZonas } = await supabase.from('zonas').select('*');
     if (dataZonas) setZonas(dataZonas);
 
+    // --- DOBLE FILTRO SQL PARA CAMIONES ---
+    // Traemos a los camiones que tengan su turno iniciado (activo=true) Y que su estado físico sea "Activo"
     const { data: dataCamiones } = await supabase
       .from('camiones')
       .select('*, profiles(nombre, ci)')
-      .eq('estado', 'Activo');
+      .eq('activo', true)
+      .eq('estado', 'Activo'); 
       
     if (dataCamiones) setCamiones(dataCamiones);
     setLoading(false);
@@ -111,7 +146,7 @@ export default function MapaEnVivoPage() {
         duration: 2000
       });
     } else {
-      alert("Este camión aún no ha reportado su ubicación GPS.");
+      alert("Este camión está en turno pero aún no ha reportado su ubicación GPS.");
     }
   };
 
@@ -149,7 +184,7 @@ export default function MapaEnVivoPage() {
           </div>
         )}
 
-        {/* NUEVO: Switch flotante de Etiquetas sobre el mapa */}
+        {/* Switch flotante de Etiquetas sobre el mapa */}
         <div className="absolute top-4 left-4 z-10">
           <label className="bg-white border-4 border-black px-3 py-2 rounded-xl shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] flex items-center gap-3 cursor-pointer hover:bg-gray-50 transition-colors">
             <div className="relative flex items-center">
@@ -183,7 +218,7 @@ export default function MapaEnVivoPage() {
             </Source>
           )}
 
-          {/* NUEVO: Nombres de las Zonas (Controlados por el switch) */}
+          {/* Nombres de las Zonas */}
           {mostrarEtiquetas && zonas.map(z => (
             <Marker key={`zona-${z.id}`} longitude={z.centro_lng} latitude={z.centro_lat}>
               <div className="bg-white/80 backdrop-blur-sm border-2 border-black px-2 py-0.5 rounded text-[10px] font-black shadow-sm text-blue-900 pointer-events-none uppercase">
@@ -192,6 +227,7 @@ export default function MapaEnVivoPage() {
             </Marker>
           ))}
 
+          {/* Vehículos con Turno Iniciado (activo=true), Estado "Activo" y con GPS */}
           {camionesConGPS.map(camion => (
             <Marker 
               key={camion.id} 
@@ -205,7 +241,6 @@ export default function MapaEnVivoPage() {
               }}
             >
               <div className={`relative cursor-pointer group transition-transform ${camionSeleccionado?.id === camion.id ? 'scale-125 z-50' : 'hover:scale-110 z-10'}`}>
-                {/* MODIFICADO: La placa respeta el switch de etiquetas */}
                 <div className={`absolute bottom-full mb-1 left-1/2 -translate-x-1/2 bg-white border-2 border-black px-2 py-0.5 rounded text-[10px] font-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] whitespace-nowrap transition-opacity duration-300 ${mostrarEtiquetas ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
                   {camion.placa}
                 </div>
@@ -222,22 +257,22 @@ export default function MapaEnVivoPage() {
       {/* SIDEBAR DERECHO DIVIDIDO EN 2 */}
       <aside className="w-80 flex flex-col gap-4 shrink-0 h-full">
         
-        {/* TARJETA 1: CAMIONES EN RUTA */}
+        {/* TARJETA 1: CAMIONES EN RUTA (TURNO INICIADO Y OPERATIVOS) */}
         <div className="bg-white rounded-2xl border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] flex-1 overflow-hidden flex flex-col min-h-0">
           <div className="p-4 border-b-4 border-black bg-blue-900 text-white shrink-0">
             <h2 className="font-black text-lg tracking-tight uppercase flex items-center gap-2">
               <span className="w-3 h-3 bg-green-400 rounded-full animate-pulse border border-black"></span>
-              En Ruta
+              Turnos Activos
             </h2>
             <p className="text-xs text-blue-200 font-bold mt-1">
-              {camionesConGPS.length} {camionesConGPS.length === 1 ? 'vehículo reportando GPS' : 'vehículos reportando GPS'}
+              {camiones.length} {camiones.length === 1 ? 'vehículo reportando' : 'vehículos reportando'}
             </p>
           </div>
 
           <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-gray-50">
             {camiones.length === 0 && !loading ? (
               <div className="text-center p-4 border-2 border-dashed border-gray-300 rounded-xl">
-                <p className="text-sm font-bold text-gray-500">No hay camiones asignados.</p>
+                <p className="text-sm font-bold text-gray-500">No hay camiones con turno iniciado.</p>
               </div>
             ) : (
               camiones.map(camion => {
@@ -260,7 +295,7 @@ export default function MapaEnVivoPage() {
                       {tieneGPS ? (
                         <span className="text-[9px] font-black bg-green-200 text-green-800 px-2 py-0.5 rounded border border-green-400 uppercase">GPS ON</span>
                       ) : (
-                        <span className="text-[9px] font-black bg-red-200 text-red-800 px-2 py-0.5 rounded border border-red-400 uppercase">OFFLINE</span>
+                        <span className="text-[9px] font-black bg-orange-200 text-orange-800 px-2 py-0.5 rounded border border-orange-400 uppercase">INICIANDO...</span>
                       )}
                     </div>
                     
@@ -289,7 +324,6 @@ export default function MapaEnVivoPage() {
             </p>
           </div>
 
-          {/* Buscador de zonas */}
           <div className="p-3 border-b-4 text-black border-black bg-gray-100 shrink-0">
             <div className="relative">
               <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-gray-500 font-bold">🔍</span>

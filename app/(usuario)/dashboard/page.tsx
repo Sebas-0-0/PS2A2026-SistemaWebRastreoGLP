@@ -7,51 +7,68 @@ import { supabase } from '@/lib/supabase';
 
 export default function UsuarioDashboard() {
   const router = useRouter();
+  // --- ESTADOS DEL COMPONENTE ---
+  // Guardamos los datos básicos del perfil (nombre y email)
   const [perfil, setPerfil] = useState<{ nombre: string, email: string } | null>(null);
+  
+  // Estado para mostrar una pantalla de "Cargando..." mientras buscamos la información
   const [loading, setLoading] = useState(true);
 
+  // --- EFECTO DE CARGA INICIAL ---
+  // Este bloque se ejecuta automáticamente al abrir la página
   useEffect(() => {
+    // Función interna para obtener los datos del usuario
     async function cargarPerfil() {
-      // 1. Verificamos quién está logeado
+      // 1. Verificamos quién está logeado pidiendo los datos a Supabase
       const { data: authData } = await supabase.auth.getUser();
       
+      // Si no hay un usuario activo, lo regresamos a la pantalla de login inmediatamente
       if (!authData.user) {
-        router.replace('/login'); // Usamos replace para no dejar huella en el historial
+        router.replace('/login'); // Usamos replace para no dejar huella en el historial de navegación
         return;
       }
 
-      // 2. Buscamos su nombre en la tabla profiles
+      // 2. Buscamos el nombre del usuario en nuestra tabla 'profiles' usando su ID
       const { data: profileData } = await supabase
         .from('profiles')
         .select('nombre')
         .eq('id', authData.user.id)
-        .single();
+        .single(); // Solo necesitamos un único perfil
 
+      // Actualizamos el estado con la información encontrada
       setPerfil({
-        nombre: profileData?.nombre || 'Vecino',
+        nombre: profileData?.nombre || 'Vecino', // Si no tiene nombre registrado, le decimos 'Vecino'
         email: authData.user.email || ''
       });
       
+      // Termina el proceso, así que quitamos la pantalla de carga
       setLoading(false);
     }
 
+    // Ejecutamos la función
     cargarPerfil();
 
     // 3. VIGILANTE EN TIEMPO REAL: Si la sesión muere (por cerrar sesión o expirar), te expulsa al instante.
+    // Esto se mantiene "escuchando" en segundo plano
     const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+      // Si el evento dice "SIGNED_OUT" (sesión cerrada) o la sesión no existe, vamos al login
       if (event === 'SIGNED_OUT' || !session) {
         router.replace('/login');
       }
     });
 
+    // Esta parte "limpia" el vigilante si el usuario se va de este componente para evitar errores
     return () => {
       authListener.subscription.unsubscribe();
     };
   }, [router]);
 
+  // --- FUNCIÓN PARA CERRAR SESIÓN ---
+  // Elimina la sesión actual en Supabase y te devuelve al inicio
   const cerrarSesion = async () => {
     await supabase.auth.signOut();
     router.replace('/'); // Te envía al inicio borrando el dashboard del historial
+
   };
 
   if (loading) {
